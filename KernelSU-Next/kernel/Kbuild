@@ -115,7 +115,8 @@ ccflags-y += -DKSU_VERSION=$(KSU_VERSION)
 else
 # If git metadata is unavailable, use default version.
 $(info -- KernelSU-Next Git metadata unavailable, using fallback version)
-KSU_VERSION_FALLBACK := 1
+KSU_GIT_VERSION_FALLBACK := 3133
+KSU_VERSION_FALLBACK := $(shell expr 30000 + $(KSU_GIT_VERSION_FALLBACK))
 $(info -- KernelSU-Next version fallback: $(KSU_VERSION_FALLBACK))
 ccflags-y += -DKSU_VERSION=$(KSU_VERSION_FALLBACK)
 endif
@@ -126,7 +127,7 @@ $(info -- KernelSU-Next tag: $(KSU_VERSION_TAG))
 ccflags-y += -DKSU_VERSION_TAG=\"$(KSU_VERSION_TAG)\"
 else
 $(info -- KernelSU-Next tag unavailable, using fallback tag)
-KSU_VERSION_TAG_FALLBACK := v0.0.1
+KSU_VERSION_TAG_FALLBACK := v3.2.0
 $(info -- KernelSU-Next tag fallback: $(KSU_VERSION_TAG_FALLBACK))
 ccflags-y += -DKSU_VERSION_TAG=\"$(KSU_VERSION_TAG_FALLBACK)\"
 endif
