@@ -1,4 +1,4 @@
-name: GKI | DoraCore Kernel Build (diting NonKSU)
+name: GKI | DoraCore Kernel Build (diting NonKSU + RE_KERNEL)
 
 on:
   workflow_dispatch:
@@ -36,6 +36,14 @@ on:
           - Disable
       BUILDING_CCACHE:
         description: 'Building CCACHE'
+        required: true
+        default: 'Disable'
+        type: choice
+        options:
+          - Enable
+          - Disable
+      RE_KERNEL:
+        description: 'Enable Re-Kernel'
         required: true
         default: 'Disable'
         type: choice
@@ -92,6 +100,7 @@ jobs:
             Type: GKI
             Device: diting
             Variant: NonKSU
+            Re-Kernel: ${{ github.event.inputs.RE_KERNEL }}
             Developer: dopaemon
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -225,6 +234,55 @@ jobs:
           git fetch origin ${{ github.event.inputs.KERNEL_BRANCH }}
           git reset --hard FETCH_HEAD
           git submodule update --init --recursive
+
+      - name: Clone Re-Kernel
+        if: github.event.inputs.RE_KERNEL == 'Enable'
+        run: |
+          cd $GITHUB_WORKSPACE/android-kernel
+          rm -rf Re-Kernel
+          git clone --depth=1 https://github.com/Sakion-Team/Re-Kernel.git
+
+      - name: Apply Re-Kernel
+        if: github.event.inputs.RE_KERNEL == 'Enable'
+        run: |
+          set -e
+          RE_DIR="${GITHUB_WORKSPACE}/android-kernel/Re-Kernel/LKM-Source"
+          COMMON_DIR="${GITHUB_WORKSPACE}/android-kernel/common"
+
+          test -d "$RE_DIR" || { echo "Re-Kernel source not found: $RE_DIR"; exit 1; }
+          cd "$COMMON_DIR"
+
+          mkdir -p drivers/rekernel
+
+          if ! grep -q 'source "drivers/rekernel/Kconfig"' drivers/Kconfig; then
+            sed -i '/endmenu/i source "drivers/rekernel/Kconfig"' drivers/Kconfig
+          fi
+
+          if ! grep -q 'rekernel/' drivers/Makefile; then
+            printf '\n# Re-Kernel Support\nobj-$(CONFIG_REKERNEL) += rekernel/\n' >> drivers/Makefile
+          fi
+
+          cp "$RE_DIR/rekernel.c" drivers/rekernel/
+          cp "$RE_DIR/rekernel.h" drivers/rekernel/
+          cp "$RE_DIR/Makefile" drivers/rekernel/
+          cp "$RE_DIR/Kconfig" drivers/rekernel/
+
+          echo "===== Re-Kernel Files ====="
+          ls -la drivers/rekernel
+
+      - name: Fix Re-Kernel version macro
+        if: github.event.inputs.RE_KERNEL == 'Enable'
+        run: |
+          cd $GITHUB_WORKSPACE/android-kernel/common
+          if [ -f drivers/rekernel/rekernel.h ]; then
+            sed -i 's|^[[:space:]]*//[[:space:]]*#define KERNEL_5_10|#define KERNEL_5_10|' drivers/rekernel/rekernel.h || true
+            sed -i 's|^[[:space:]]*//[[:space:]]*#define KERNEL_5_10_0|#define KERNEL_5_10_0|' drivers/rekernel/rekernel.h || true
+            if ! grep -q 'linux/sched/jobctl.h' drivers/rekernel/rekernel.h; then
+              sed -i '1i #include <linux/sched/jobctl.h>' drivers/rekernel/rekernel.h || true
+            fi
+            echo "===== Re-Kernel Header Preview ====="
+            sed -n '1,120p' drivers/rekernel/rekernel.h
+          fi
 
       - name: Cache Clang
         if: github.event.inputs.USING_CCACHE == 'Enable'
@@ -381,6 +439,11 @@ jobs:
           echo "CONFIG_KSU=n" >> arch/arm64/configs/gki_defconfig
           echo "CONFIG_BUILD_WITH_CCACHE=y" >> arch/arm64/configs/gki_defconfig
 
+          if [ "${{ github.event.inputs.RE_KERNEL }}" = "Enable" ]; then
+            echo "CONFIG_REKERNEL=y" >> arch/arm64/configs/gki_defconfig
+            echo "CONFIG_REKERNEL_NETWORK=y" >> arch/arm64/configs/gki_defconfig
+          fi
+
           rm ./android/abi_gki_protected_exports_* || true
 
           cat arch/arm64/configs/vendor/waipio_GKI.config >> arch/arm64/configs/gki_defconfig
@@ -408,13 +471,13 @@ jobs:
                -e LTO_CLANG_FULL
           fi
 
-          make -j"$BUILD_JOBS" \
-               LLVM=1 \
-               ARCH=arm64 \
-               CROSS_COMPILE="aarch64-linux-gnu-" \
+          make -j"$BUILD LLVM ARCH CROSS_COMPILE="aarch64-linux-gnu-" \
                O=$GITHUB_WORKSPACE/android-kernel/out \
                LLVM_IAS=1 \
                olddefconfig
+
+          echo "===== Check RE_KERNEL Config ====="
+          grep -E 'CONFIG_REKERNEL|CONFIG_REKERNEL_NETWORK' "$GITHUB_WORKSPACE/android-kernel/out/.config" || true
 
           run_make_keepalive "$GITHUB_WORKSPACE/android-kernel/out/build-$DEVICE-NonKSU.log" \
             make -j"$BUILD_JOBS" \
@@ -432,7 +495,7 @@ jobs:
 
           [ -f "$GITHUB_WORKSPACE/android-kernel/out/arch/arm64/boot/Image" ] || { exit 1; }
 
-          ZIP_NAME="DoraCore-${DEVICE}-NonKSU-5.10-A12-${BUILD_DATE}.zip"
+          ZIP_NAME="DoraCore-${DEVICE}-NonKSU${{ github.event.inputs.RE_KERNEL == 'Enable' && '-REKERNEL' || '' }}-5.10-A12-${BUILD_DATE}.zip"
           cd $GITHUB_WORKSPACE/android-kernel/AnyKernel3
           cp -r $GITHUB_WORKSPACE/android-kernel/out/arch/arm64/boot/Image ./Image
           zip -r9 "$ZIP_NAME" *
@@ -448,6 +511,12 @@ jobs:
           files: DoraCore*.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload zip to artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DoraCore-diting-NonKSU${{ github.event.inputs.RE_KERNEL == 'Enable' && '-REKERNEL' || '' }}-zip
+          path: DoraCore*.zip
 
       - name: Generate CCACHE
         if: github.event.inputs.BUILDING_CCACHE == 'Enable'
@@ -514,7 +583,7 @@ jobs:
             return "$MAKE_RC"
           }
 
-          cd $GITHUB_WORKSPACE/android-kernel/common/
+          cd $GITHUB_WORKSPACE/android-kernel/common
           rm -rf $GITHUB_WORKSPACE/android-kernel/out
 
           make -j"$BUILD_JOBS" \
