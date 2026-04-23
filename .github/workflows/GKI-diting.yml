@@ -1,0 +1,547 @@
+name: GKI | DoraCore Kernel Build (diting NonKSU)
+
+on:
+  workflow_dispatch:
+    inputs:
+      KERNEL_BRANCH:
+        description: 'DoraCore Branch'
+        required: true
+        default: 'Rebase'
+        type: choice
+        options:
+          - Rebase
+      KERNEL_GIT:
+        description: 'Kernel Source Code'
+        required: true
+        default: 'https://github.com/dopaemon/android_kernel_xiaomi_common.git'
+      MANIFEST_GIT:
+        description: 'Kernel Manifest Git'
+        required: true
+        default: 'https://github.com/dopaemon/android_kernel_xiaomi_common.git'
+      USING_CCACHE:
+        description: 'Using CCACHE'
+        required: true
+        default: 'Enable'
+        type: choice
+        options:
+          - Enable
+          - Disable
+      CLEAN_CCACHE:
+        description: 'Clean CCACHE'
+        required: true
+        default: 'Disable'
+        type: choice
+        options:
+          - Enable
+          - Disable
+      BUILDING_CCACHE:
+        description: 'Building CCACHE'
+        required: true
+        default: 'Disable'
+        type: choice
+        options:
+          - Enable
+          - Disable
+      RELEASE:
+        description: 'Status Release'
+        required: true
+        default: 'draft'
+        type: choice
+        options:
+          - draft
+          - prerelease
+          - release
+
+jobs:
+  cache-clear:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Clean CCACHE
+        if: github.event.inputs.CLEAN_CCACHE == 'Enable'
+        uses: easimon/wipe-cache@main
+
+  create_release:
+    needs: cache-clear
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.set-tag.outputs.tag }}
+    permissions:
+      contents: write
+      discussions: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set tag as timestamp
+        id: set-tag
+        run: echo "tag=$(date +'%Y%m%d%H%M%S')" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.set-tag.outputs.tag }}
+          name: DoraCore Build ${{ steps.set-tag.outputs.tag }}
+          draft: ${{ github.event.inputs.RELEASE == 'draft' }}
+          prerelease: ${{ github.event.inputs.RELEASE == 'prerelease' }}
+          make_latest: ${{ github.event.inputs.RELEASE == 'release' }}
+          body: |
+            Build: DoraCore Kernel For GKI Linux 5.10.y
+            Linux: Linux 5.10.y
+            Type: GKI
+            Device: diting
+            Variant: NonKSU
+            Developer: dopaemon
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build:
+    needs: create_release
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      DEVICE: diting
+    permissions:
+      contents: write
+      discussions: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Free Disk Space
+        uses: endersonmenezes/free-disk-space@v3
+        with:
+          remove_android: true
+          remove_dotnet: true
+          remove_haskell: true
+          remove_tool_cache: true
+          remove_swap: true
+          remove_packages: "azure-cli google-cloud-cli microsoft-edge-stable google-chrome-stable firefox postgresql* temurin-* *llvm* mysql* dotnet-sdk-*"
+          remove_packages_one_command: true
+          remove_folders: "/usr/share/swift /usr/share/miniconda /usr/share/az* /usr/local/lib/node_modules /usr/local/share/chromium /usr/local/share/powershell /usr/local/julia /usr/local/aws-cli /usr/local/aws-sam-cli /usr/share/gradle"
+          rm_cmd: "rmz"
+          rmz_version: "3.1.1"
+          testing: false
+
+      - name: Setup Swap Space
+        uses: thejerrybao/setup-swap-space@v1
+        with:
+          swap-space-path: /swapfile
+          swap-size-gb: 16
+          remove-existing-swap-files: true
+
+      - name: Tune Swap Aggressiveness
+        run: |
+          set -euo pipefail
+          sudo sysctl -w vm.swappiness=200
+          sudo sysctl -w vm.page-cluster=0
+          sudo swapoff /swapfile || true
+          sudo swapon -p 32767 /swapfile
+          echo "===== Swap Tuning ====="
+          cat /proc/sys/vm/swappiness
+          cat /proc/sys/vm/page-cluster
+          swapon --show --bytes
+
+      - name: Check Initial Disk Space
+        run: |
+          echo "===== Initial Total Disk Space in GB ====="
+          df -BG
+
+      - name: Build Environment
+        run: |
+          echo "BUILD_DATE=$(TZ=Asia/Ho_Chi_Minh date +'%Y-%m%d-%H%M')" >> $GITHUB_ENV
+          sudo apt-mark hold firefox
+          sudo apt-mark hold libc-bin
+          sudo apt purge man-db
+          sudo rm -rf /var/lib/man-db/auto-update
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            curl bison flex make binutils git perl gcc python3 \
+            python-is-python3 bc libssl-dev libelf-dev \
+            aria2 zip unzip ccache binutils-aarch64-linux-gnu \
+            tar which wget
+          cd $GITHUB_WORKSPACE
+          sudo wget -O /usr/bin/repo https://storage.googleapis.com/git-repo-downloads/repo
+          sudo chmod +x /usr/bin/repo
+          git config --global user.name "${{ github.actor }}"
+          git config --global user.email "${{ github.actor_id }}+${{ github.actor }}@users.noreply.github.com"
+
+          mkdir -p $GITHUB_WORKSPACE/android-kernel
+          cd $GITHUB_WORKSPACE/android-kernel
+          repo init --depth=1 --u ${{ github.event.inputs.MANIFEST_GIT }} -b manifest
+          repo sync -c -j$(nproc --all) --force-sync --no-clone-bundle --no-tags
+
+          git clone -b build --single-branch --depth=1 https://github.com/dopaemon/android_kernel_xiaomi_common.git build
+          rm -rf .git .github .repo common
+          rm -rf ./build/_setup_env.sh
+          wget -O ./build/_setup_env.sh https://raw.githubusercontent.com/dopaemon/android_kernel_xiaomi_common/refs/heads/master/.github/scripts/_setup_env.sh
+          chmod +x ./build/_setup_env.sh
+
+          git clone -b master --depth=1 --single-branch https://github.com/dopaemon/Anykernel3.git ./AnyKernel3
+          rm -rf ./AnyKernel3/.git
+
+          rm -rf ${{ github.workspace }}/android-kernel/prebuilts/build-tools
+          rm -rf ${{ github.workspace }}/android-kernel/prebuilts/kernel-build-tools
+          cd ${{ github.workspace }}/android-kernel/prebuilts
+          git clone -b build-tools --single-branch --depth=1 https://github.com/dopaemon/android_kernel_xiaomi_common.git ${{ github.workspace }}/android-kernel/prebuilts/build-tools
+          git clone -b build-tools --single-branch --depth=1 https://github.com/dopaemon/android_kernel_xiaomi_common.git ${{ github.workspace }}/android-kernel/prebuilts/kernel-build-tools
+
+      - name: Get SM8450 Trees
+        run: |
+          git clone -b lineage-23.0 \
+              --single-branch \
+              --depth=1 \
+              https://github.com/dopaemon/android_kernel_xiaomi_sm8450-devicetrees.git \
+              $GITHUB_WORKSPACE/android-kernel/sm8450-devicetrees
+
+          git clone -b lineage-23.0 \
+              --single-branch \
+              --depth=1 \
+              https://github.com/dopaemon/android_kernel_xiaomi_sm8450-modules.git \
+              $GITHUB_WORKSPACE/android-kernel/sm8450-modules
+
+      - name: Cache Kernel
+        if: github.event.inputs.USING_CCACHE == 'Enable'
+        id: cache-kernel
+        uses: actions/cache@v4
+        with:
+          path: android-kernel/common
+          key: kernel-diting-${{ github.event.inputs.KERNEL_BRANCH }}
+          restore-keys: |
+            kernel-diting-
+
+      - name: Clone Kernel if cache missed
+        if: steps.cache-kernel.outputs.cache-hit != 'true'
+        run: |
+          git clone -b ${{ github.event.inputs.KERNEL_BRANCH }} --recurse-submodules -j$(nproc --all) --single-branch --no-tags ${{ github.event.inputs.KERNEL_GIT }} android-kernel/common
+
+      - name: Sync Kernel if cache complete
+        if: steps.cache-kernel.outputs.cache-hit == 'true'
+        run: |
+          cd android-kernel/common
+          git fetch origin ${{ github.event.inputs.KERNEL_BRANCH }}
+          git reset --hard FETCH_HEAD
+          git submodule update --init --recursive
+
+      - name: Cache Clang
+        if: github.event.inputs.USING_CCACHE == 'Enable'
+        id: cache-clang
+        uses: actions/cache@v4
+        with:
+          path: android-kernel/prebuilts-master/clang/host/linux-x86/clang-r416183b
+          key: clang-diting-v1
+          restore-keys: |
+            clang-diting-
+
+      - name: Clone Clang if cache missed
+        if: steps.cache-clang.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p $GITHUB_WORKSPACE/android-kernel/prebuilts-master/clang/host/linux-x86/
+          cd $GITHUB_WORKSPACE/android-kernel/prebuilts-master/clang/host/linux-x86/
+          git clone -b 21 --single-branch --depth=1 https://gitlab.com/vantoman/playground-clang.git clang-r416183b
+
+      - name: Setup Environment
+        run: |
+          export PATH="${{ github.workspace }}/android-kernel/prebuilts-master/clang/host/linux-x86/clang-r416183b/bin:$PATH"
+          export PATH="${{ github.workspace }}/android-kernel/prebuilts/build-tools/bin:$PATH"
+          CLANG_DIR="${{ github.workspace }}/android-kernel/prebuilts-master/clang/host/linux-x86/clang-r416183b/bin"
+          CLANG_VERSION="$($CLANG_DIR/clang --version | head -n 1)"
+          LLD_VERSION="$($CLANG_DIR/ld.lld --version | head -n 1)"
+          echo "Prebuilts Information:"
+          echo "Clang Version: $CLANG_VERSION"
+          echo "LLD Version: $LLD_VERSION"
+
+      - name: First Setup CCACHE
+        run: |
+          CCACHE_DIR="${{ github.workspace }}/ccache"
+          mkdir -p $CCACHE_DIR
+          sudo chmod 7777 $CCACHE_DIR
+          echo "CCACHE_DIR=$CCACHE_DIR" >> $GITHUB_ENV
+          echo "CCACHE_BASEDIR=${GITHUB_WORKSPACE}" >> $GITHUB_ENV
+
+      - name: Get Cache CCACHE
+        if: github.event.inputs.USING_CCACHE == 'Enable'
+        id: cache-ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-diting-${{ github.event.inputs.KERNEL_BRANCH }}
+          restore-keys: |
+            ccache-diting-
+
+      - name: Complete Setup CCACHE
+        run: |
+          ccache --set-config=cache_dir=${{ env.CCACHE_DIR }}
+          ccache --set-config=max_size=5G
+          ccache --set-config=sloppiness=time_macros,include_file_ctime,include_file_mtime,file_stat_matches
+          ccache --set-config=hash_dir=false
+          ccache -s
+
+      - name: CCACHE Information
+        run: |
+          echo "First Status ccache:"
+          ccache -s
+          if [ "${{ steps.cache-ccache.outputs.cache-hit }}" == 'true' ]; then
+            echo ""
+            echo "CCACHE Information:"
+            ccache -sv
+          fi
+
+      - name: Build diting NonKSU
+        if: github.event.inputs.KERNEL_BRANCH == 'Rebase'
+        run: |
+          set -euo pipefail
+          DEVICE="diting"
+          ZIP_NAME=""
+          BUILD_JOBS="$(nproc --all)"
+          if [ "$BUILD_JOBS" -gt 4 ]; then
+             BUILD_JOBS=4
+          fi
+          rm -rf $GITHUB_WORKSPACE/android-kernel/out
+
+          log_resource_snapshot() {
+            local mem_total_kb mem_avail_kb mem_used_kb mem_used_mib mem_total_mib mem_used_pct
+            local swap_total_kb swap_free_kb swap_used_kb swap_used_mib swap_total_mib swap_used_pct
+            local disk_usage
+
+            mem_total_kb=$(awk '/MemTotal:/ {print $2}' /proc/meminfo)
+            mem_avail_kb=$(awk '/MemAvailable:/ {print $2}' /proc/meminfo)
+            mem_used_kb=$((mem_total_kb - mem_avail_kb))
+            mem_used_mib=$((mem_used_kb / 1024))
+            mem_total_mib=$((mem_total_kb / 1024))
+            mem_used_pct=$((100 * mem_used_kb / mem_total_kb))
+
+            swap_total_kb=$(awk '/SwapTotal:/ {print $2}' /proc/meminfo)
+            swap_free_kb=$(awk '/SwapFree:/ {print $2}' /proc/meminfo)
+            if [ "$swap_total_kb" -gt 0 ]; then
+              swap_used_kb=$((swap_total_kb - swap_free_kb))
+              swap_used_mib=$((swap_used_kb / 1024))
+              swap_total_mib=$((swap_total_kb / 1024))
+              swap_used_pct=$((100 * swap_used_kb / swap_total_kb))
+            else
+              swap_used_mib=0
+              swap_total_mib=0
+              swap_used_pct=0
+            fi
+
+            disk_usage=$(df -P -BG "$GITHUB_WORKSPACE" | awk 'NR==2 {print $3 "/" $2 " (" $5 ")"}')
+            printf '[monitor] %s | RAM %s/%s MiB (%s%%) | SWAP %s/%s MiB (%s%%) | DISK %s\n' \
+              "$(date +'%F %T')" \
+              "$mem_used_mib" "$mem_total_mib" "$mem_used_pct" \
+              "$swap_used_mib" "$swap_total_mib" "$swap_used_pct" \
+              "$disk_usage"
+          }
+
+          run_make_keepalive() {
+            local log_file="$1"
+            shift
+
+            "$@" 2>&1 | tee "$log_file" &
+            MAKE_PID=$!
+
+            log_resource_snapshot
+
+            while kill -0 "$MAKE_PID" 2>/dev/null; do
+              log_resource_snapshot
+              sleep 30
+            done &
+            KEEPALIVE_PID=$!
+
+            wait "$MAKE_PID"
+            MAKE_RC=$?
+            kill "$KEEPALIVE_PID" 2>/dev/null || true
+            wait "$KEEPALIVE_PID" 2>/dev/null || true
+
+            return "$MAKE_RC"
+          }
+
+          export CCACHE_LOGFILE="${{ github.workspace }}/$DEVICE-NonKSU-ccache.log"
+          export CCACHE_COMPILERCHECK="none"
+          export CCACHE_BASEDIR="${{ github.workspace }}"
+          export CCACHE_NOHASHDIR="true"
+          export CCACHE_HARDLINK="true"
+          export CCACHE_DIR="${{ env.CCACHE_DIR }}"
+          export CCACHE_MAXSIZE="3G"
+          export KERNEL_USE_CCACHE=1
+
+          export PATH="${{ github.workspace }}/android-kernel/prebuilts-master/clang/host/linux-x86/clang-r416183b/bin:$PATH"
+          export PATH="${{ github.workspace }}/android-kernel/prebuilts/build-tools/bin:$PATH"
+
+          unset DTC
+          export DTC="${{ github.workspace }}/android-kernel/prebuilts/build-tools/bin/dtc"
+
+          cd $GITHUB_WORKSPACE/android-kernel/common
+          git add -A
+          git reset --hard HEAD
+          rm -rf $GITHUB_WORKSPACE/android-kernel/out/android12-5.10
+
+          echo "CONFIG_KSU=n" >> arch/arm64/configs/gki_defconfig
+          echo "CONFIG_BUILD_WITH_CCACHE=y" >> arch/arm64/configs/gki_defconfig
+
+          rm ./android/abi_gki_protected_exports_* || true
+
+          cat arch/arm64/configs/vendor/waipio_GKI.config >> arch/arm64/configs/gki_defconfig
+          cat arch/arm64/configs/vendor/xiaomi_GKI.config >> arch/arm64/configs/gki_defconfig
+          cat arch/arm64/configs/vendor/diting_GKI.config >> arch/arm64/configs/gki_defconfig
+          cat arch/arm64/configs/vendor/debugfs.config >> arch/arm64/configs/gki_defconfig
+
+          export DTC=$(pwd)/scripts/dtc/dtc
+
+          make -j"$BUILD_JOBS" \
+               LLVM=1 \
+               ARCH=arm64 \
+               CROSS_COMPILE="aarch64-linux-gnu-" \
+               CC="ccache clang" \
+               O=$GITHUB_WORKSPACE/android-kernel/out \
+               LLVM_IAS=1 \
+               LD="ld.lld" \
+               HOSTLD="ld.lld" \
+               DTC_EXT=dtc \
+               gki_defconfig
+
+          if [ -x scripts/config ]; then
+             scripts/config --file "$GITHUB_WORKSPACE/android-kernel/out/.config" \
+               -d LTO_CLANG_THIN \
+               -e LTO_CLANG_FULL
+          fi
+
+          make -j"$BUILD_JOBS" \
+               LLVM=1 \
+               ARCH=arm64 \
+               CROSS_COMPILE="aarch64-linux-gnu-" \
+               O=$GITHUB_WORKSPACE/android-kernel/out \
+               LLVM_IAS=1 \
+               olddefconfig
+
+          run_make_keepalive "$GITHUB_WORKSPACE/android-kernel/out/build-$DEVICE-NonKSU.log" \
+            make -j"$BUILD_JOBS" \
+              LLVM=1 \
+              ARCH=arm64 \
+              CROSS_COMPILE="aarch64-linux-gnu-" \
+              CC="ccache clang" \
+              LD="ld.lld" \
+              HOSTLD="ld.lld" \
+              O=$GITHUB_WORKSPACE/android-kernel/out \
+              LLVM_IAS=1 \
+              DTC_EXT=dtc \
+              DTC_FLAGS="-Wno-all" \
+              Image
+
+          [ -f "$GITHUB_WORKSPACE/android-kernel/out/arch/arm64/boot/Image" ] || { exit 1; }
+
+          ZIP_NAME="DoraCore-${DEVICE}-NonKSU-5.10-A12-${BUILD_DATE}.zip"
+          cd $GITHUB_WORKSPACE/android-kernel/AnyKernel3
+          cp -r $GITHUB_WORKSPACE/android-kernel/out/arch/arm64/boot/Image ./Image
+          zip -r9 "$ZIP_NAME" *
+          mv "$ZIP_NAME" $GITHUB_WORKSPACE/
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.create_release.outputs.tag }}
+          draft: ${{ github.event.inputs.RELEASE == 'draft' }}
+          prerelease: ${{ github.event.inputs.RELEASE == 'prerelease' }}
+          make_latest: ${{ github.event.inputs.RELEASE == 'release' }}
+          files: DoraCore*.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate CCACHE
+        if: github.event.inputs.BUILDING_CCACHE == 'Enable'
+        run: |
+          set -euo pipefail
+          BUILD_JOBS="$(nproc --all)"
+          if [ "$BUILD_JOBS" -gt 4 ]; then
+             BUILD_JOBS=4
+          fi
+
+          log_resource_snapshot() {
+            local mem_total_kb mem_avail_kb mem_used_kb mem_used_mib mem_total_mib mem_used_pct
+            local swap_total_kb swap_free_kb swap_used_kb swap_used_mib swap_total_mib swap_used_pct
+            local disk_usage
+
+            mem_total_kb=$(awk '/MemTotal:/ {print $2}' /proc/meminfo)
+            mem_avail_kb=$(awk '/MemAvailable:/ {print $2}' /proc/meminfo)
+            mem_used_kb=$((mem_total_kb - mem_avail_kb))
+            mem_used_mib=$((mem_used_kb / 1024))
+            mem_total_mib=$((mem_total_kb / 1024))
+            mem_used_pct=$((100 * mem_used_kb / mem_total_kb))
+
+            swap_total_kb=$(awk '/SwapTotal:/ {print $2}' /proc/meminfo)
+            swap_free_kb=$(awk '/SwapFree:/ {print $2}' /proc/meminfo)
+            if [ "$swap_total_kb" -gt 0 ]; then
+              swap_used_kb=$((swap_total_kb - swap_free_kb))
+              swap_used_mib=$((swap_used_kb / 1024))
+              swap_total_mib=$((swap_total_kb / 1024))
+              swap_used_pct=$((100 * swap_used_kb / swap_total_kb))
+            else
+              swap_used_mib=0
+              swap_total_mib=0
+              swap_used_pct=0
+            fi
+
+            disk_usage=$(df -P -BG "$GITHUB_WORKSPACE" | awk 'NR==2 {print $3 "/" $2 " (" $5 ")"}')
+            printf '[monitor] %s | RAM %s/%s MiB (%s%%) | SWAP %s/%s MiB (%s%%) | DISK %s\n' \
+              "$(date +'%F %T')" \
+              "$mem_used_mib" "$mem_total_mib" "$mem_used_pct" \
+              "$swap_used_mib" "$swap_total_mib" "$swap_used_pct" \
+              "$disk_usage"
+          }
+
+          run_make_keepalive() {
+            local log_file="$1"
+            shift
+
+            "$@" 2>&1 | tee "$log_file" &
+            MAKE_PID=$!
+
+            log_resource_snapshot
+
+            while kill -0 "$MAKE_PID" 2>/dev/null; do
+              log_resource_snapshot
+              sleep 30
+            done &
+            KEEPALIVE_PID=$!
+
+            wait "$MAKE_PID"
+            MAKE_RC=$?
+            kill "$KEEPALIVE_PID" 2>/dev/null || true
+            wait "$KEEPALIVE_PID" 2>/dev/null || true
+
+            return "$MAKE_RC"
+          }
+
+          cd $GITHUB_WORKSPACE/android-kernel/common/
+          rm -rf $GITHUB_WORKSPACE/android-kernel/out
+
+          make -j"$BUILD_JOBS" \
+               LLVM=1 \
+               LLVM_IAS=1 \
+               ARCH=arm64 \
+               CROSS_COMPILE="aarch64-linux-gnu-" \
+               CC="ccache clang" \
+               O=$GITHUB_WORKSPACE/android-kernel/out \
+               LD="ld.lld" \
+               HOSTLD=ld.lld \
+               gki_defconfig
+
+          run_make_keepalive "$GITHUB_WORKSPACE/android-kernel/out/build-diting-ccache.log" \
+            make -j"$BUILD_JOBS" \
+              LLVM=1 \
+              LLVM_IAS=1 \
+              ARCH=arm64 \
+              CROSS_COMPILE="aarch64-linux-gnu-" \
+              CC="ccache clang" \
+              LD="ld.lld" \
+              O=$GITHUB_WORKSPACE/android-kernel/out \
+              HOSTLD=ld.lld \
+              Image
+
+      - name: Upload CCACHE Logs to artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: diting-ccache-logs
+          path: ${{ github.workspace }}/*-*-ccache.log
