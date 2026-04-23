@@ -444,7 +444,7 @@ jobs:
             echo "CONFIG_REKERNEL_NETWORK=y" >> arch/arm64/configs/gki_defconfig
           fi
 
-          rm ./android/abi_gki_protected_exports_* || true
+          rm -f ./android/abi_gki_protected_exports_*
 
           cat arch/arm64/configs/vendor/waipio_GKI.config >> arch/arm64/configs/gki_defconfig
           cat arch/arm64/configs/vendor/xiaomi_GKI.config >> arch/arm64/configs/gki_defconfig
@@ -471,7 +471,10 @@ jobs:
                -e LTO_CLANG_FULL
           fi
 
-          make -j"$BUILD LLVM ARCH CROSS_COMPILE="aarch64-linux-gnu-" \
+          make -j"$BUILD_JOBS" \
+               LLVM=1 \
+               ARCH=arm64 \
+               CROSS_COMPILE="aarch64-linux-gnu-" \
                O=$GITHUB_WORKSPACE/android-kernel/out \
                LLVM_IAS=1 \
                olddefconfig
