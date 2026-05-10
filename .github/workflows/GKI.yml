@@ -205,13 +205,13 @@ jobs:
           remove_folders: "/usr/share/swift /usr/share/miniconda /usr/share/az* /usr/local/lib/node_modules /usr/local/share/chromium /usr/local/share/powershell /usr/local/julia /usr/local/aws-cli /usr/local/aws-sam-cli /usr/share/gradle"
           rm_cmd: "rmz"
           rmz_version: "3.1.1"
-          testing: false
+          testing: true
 
       - name: Setup Swap Space
         uses: thejerrybao/setup-swap-space@v1
         with:
           swap-space-path: /swapfile
-          swap-size-gb: 16
+          swap-size-gb: 32
           remove-existing-swap-files: true
 
       - name: Tune Swap Aggressiveness
@@ -243,6 +243,7 @@ jobs:
         run: |
           TARGET="${{ github.event.inputs.BUILD_TARGET }}"
           echo "BUILD_DATE=$(TZ=Asia/Ho_Chi_Minh date +'%Y-%m%d-%H%M')" >> $GITHUB_ENV
+          echo "NOW=$(TZ='Asia/Ho_Chi_Minh' date '+%Y-%m-%d %H:%M:%S')" >> $GITHUB_ENV
           sudo apt-mark hold firefox
           sudo apt-mark hold libc-bin
           sudo apt purge man-db
@@ -320,7 +321,7 @@ jobs:
         id: cache-clang
         uses: actions/cache@v4
         with:
-          path: android-kernel/prebuilts-master/clang/host/linux-x86/clang-r416183b
+          path: android-kernel/prebuilts-master/clang/host/linux-x86
           key: clang-${{ github.event.inputs.KERNEL_BRANCH }}
           restore-keys: |
             clang-
@@ -328,6 +329,11 @@ jobs:
       - name: Clone Clang if cache missed
         if: steps.cache-clang.outputs.cache-hit != 'true'
         run: |
+          git clone -b main-kernel \
+                    --single-branch \
+                    --depth=1 \
+                    https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 \
+                    $GITHUB_WORKSPACE/android-kernel/prebuilts-master/clang/host/linux-x86
           # git clone -b ${{ github.event.inputs.CLANG_BRANCH }} --depth=1 --single-branch ${{ github.event.inputs.CLANG_PREBUILT }} $GITHUB_WORKSPACE/android-kernel/prebuilts-master/clang/host/linux-x86/clang-r416183b
           # git clone -b 21 \
               # --single-branch \
@@ -335,19 +341,25 @@ jobs:
               # --no-tags \
               # https://gitlab.com/clangsantoni/zyc_clang.git \
               # $GITHUB_WORKSPACE/android-kernel/prebuilts-master/clang/host/linux-x86/clang-r416183b
-          mkdir -p $GITHUB_WORKSPACE/android-kernel/prebuilts-master/clang/host/linux-x86
-          # cd $GITHUB_WORKSPACE/android-kernel/prebuilts-master/clang/host/linux-x86/clang-r416183b/
+          # mkdir -p $GITHUB_WORKSPACE/android-kernel/prebuilts-master/clang/host/linux-x86
+          # cd $GITHUB_WORKSPACE/android-kernel/prebuilts-master/clang/host/linux-x86
+          # ln -sf clang-r584948 clang-r416183b
           # aria2c -s16 -x16 -k1M https://github.com/ZyCromerZ/Clang/releases/download/22.0.0git-20250928-release/Clang-22.0.0git-20250928.tar.gz
           # tar -xvf Clang-22.0.0git-20250928.tar.gz
           # rm -rf Clang-22.0.0git-20250928.tar.gz
-          cd $GITHUB_WORKSPACE/android-kernel/prebuilts-master/clang/host/linux-x86/
+          # cd $GITHUB_WORKSPACE/android-kernel/prebuilts-master/clang/host/linux-x86/
           # aria2c -s16 -x16 -k1M https://github.com/cctv18/oneplus_sm8650_toolchain/releases/download/LLVM-Clang20-r547379/clang-r547379.zip -o clang.zip &&
           # unzip -q clang.zip -d clang-r416183b
           # rm -rf clang.zip
-          git clone -b 21 --single-branch --depth=1 https://gitlab.com/vantoman/playground-clang.git clang-r416183b
+          # git clone -b 21 --single-branch --depth=1 https://gitlab.com/vantoman/playground-clang.git clang-r416183b
 
       - name: Setup Enviroment
         run: |
+          PWDIR=$(pwd)
+          cd $GITHUB_WORKSPACE/android-kernel/prebuilts-master/clang/host/linux-x86
+          rm -rf clang-r416183b
+          ln -sfn clang-r584948 clang-r416183b
+          cd $PWDIR
           export PATH="${{ github.workspace }}/android-kernel/prebuilts-master/clang/host/linux-x86/clang-r416183b/bin:$PATH"
           export PATH="${{ github.workspace }}/android-kernel/prebuilts/build-tools/bin:$PATH"
           # echo 'PATH="${{ github.workspace }}/android-kernel/prebuilts-master/clang/host/linux-x86/clang-r416183b/bin:$PATH"' >> $GITHUB_ENV
@@ -550,9 +562,13 @@ jobs:
              cp -r $GITHUB_WORKSPACE/android-kernel/out/arch/arm64/boot/Image ./Image
              zip -r9 "$ZIP_NAME" *
              mv "$ZIP_NAME" $GITHUB_WORKSPACE/
+             FULL_DIR="$GITHUB_WORKSPACE/${ZIP_NAME}"
+             echo "FULL_DIR=${FULL_DIR}" >> $GITHUB_ENV
+             rm -rf $GITHUB_WORKSPACE/android-kernel/out
           else
              cd $GITHUB_WORKSPACE/android-kernel/AnyKernel3
              cp -r $GITHUB_WORKSPACE/android-kernel/out/arch/arm64/boot/Image ./Image-kernelsu
+             rm -rf $GITHUB_WORKSPACE/android-kernel/out
           fi
 
       - name: Build Selected Devices NonKSU
@@ -707,9 +723,13 @@ jobs:
              cp -r $GITHUB_WORKSPACE/android-kernel/out/arch/arm64/boot/Image ./Image
              zip -r9 "$ZIP_NAME" *
              mv "$ZIP_NAME" $GITHUB_WORKSPACE/
+             FULL_DIR="$GITHUB_WORKSPACE/${ZIP_NAME}"
+             echo "FULL_DIR=${FULL_DIR}" >> $GITHUB_ENV
+             rm -rf $GITHUB_WORKSPACE/android-kernel/out
           else
              cd $GITHUB_WORKSPACE/android-kernel/AnyKernel3
              cp -r $GITHUB_WORKSPACE/android-kernel/out/arch/arm64/boot/Image ./Image-standard
+             rm -rf $GITHUB_WORKSPACE/android-kernel/out
           fi
 
       - name: Create Flashable Both Image
@@ -720,6 +740,8 @@ jobs:
           cd $GITHUB_WORKSPACE/android-kernel/AnyKernel3
           zip -r9 "$ZIP_NAME" *
           mv "$ZIP_NAME" $GITHUB_WORKSPACE/
+          FULL_DIR="$GITHUB_WORKSPACE/${ZIP_NAME}"
+          echo "FULL_DIR=${FULL_DIR}" >> $GITHUB_ENV
 
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
@@ -731,6 +753,21 @@ jobs:
           files: DoraCore*.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Send Telegram
+        uses: BorisTestov/tg_sender_action@latest
+        continue-on-error: true
+        env:
+          TG_SENDER_TG_CHAT_ID: ${{ secrets.TG_SENDER_TG_CHAT_ID }}
+          TG_SENDER_TG_BOT_TOKEN: ${{ secrets.TG_SENDER_TG_BOT_TOKEN }}
+          TG_SENDER_PAYLOAD_MESSAGE: |
+            <b>DoraCore Kernel | CI/CD</b>
+
+            • Device: ${{ matrix.device }}
+            • Tag: ${{ needs.create_release.outputs.tag }}
+            • Build Time: ${{ env.NOW }}
+          TG_SENDER_PAYLOAD_PARSE_MODE: HTML
+          TG_SENDER_PAYLOAD_FILE_PATH: ${{ env.FULL_DIR }}
 
       - name: Generate CCACHE
         if: (github.event.inputs.BUILDING_CCACHE == 'Enable' && github.event.inputs.BUILD_TARGET != 'Both')
@@ -823,6 +860,10 @@ jobs:
               O=$GITHUB_WORKSPACE/android-kernel/out \
               HOSTLD=ld.lld \
               Image
+
+      - name: Clear OUTPUT Folder
+        run: |
+          rm -rf $GITHUB_WORKSPACE/android-kernel/out
 
       - name: Upload CCACHE Logs to artifact
         uses: actions/upload-artifact@v5
